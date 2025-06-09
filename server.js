@@ -78,6 +78,32 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
     }
 });
 
+// Delete recording endpoint
+app.delete('/api/recordings/:id', async (req, res) => {
+    try {
+        const recordingId = parseInt(req.params.id);
+        
+        if (!recordingId || isNaN(recordingId)) {
+            return res.status(400).json({ error: 'Invalid recording ID' });
+        }
+        
+        // Delete from database
+        const deletedRecording = await database.deleteRecording(recordingId);
+        
+        if (deletedRecording) {
+            res.json({ 
+                message: 'Recording deleted successfully',
+                deletedRecording: deletedRecording 
+            });
+        } else {
+            res.status(404).json({ error: 'Recording not found' });
+        }
+    } catch (error) {
+        console.error('Error deleting recording:', error);
+        res.status(500).json({ error: 'Failed to delete recording' });
+    }
+});
+
 app.post('/api/chat', async (req, res) => {
     try {
         const { question } = req.body;
@@ -133,6 +159,31 @@ app.get('/api/search', async (req, res) => {
     }
 });
 
+// Bulk delete endpoint (optional - for cleanup)
+app.delete('/api/recordings', async (req, res) => {
+    try {
+        const { ids } = req.body;
+        
+        if (!ids || !Array.isArray(ids)) {
+            return res.status(400).json({ error: 'Array of recording IDs required' });
+        }
+        
+        const deleteResults = await Promise.all(
+            ids.map(id => database.deleteRecording(parseInt(id)))
+        );
+        
+        const deletedCount = deleteResults.filter(result => result !== null).length;
+        
+        res.json({ 
+            message: `${deletedCount} recordings deleted successfully`,
+            deletedCount: deletedCount
+        });
+    } catch (error) {
+        console.error('Error bulk deleting recordings:', error);
+        res.status(500).json({ error: 'Failed to delete recordings' });
+    }
+});
+
 // Health check with database status
 app.get('/api/health', async (req, res) => {
     try {
@@ -141,7 +192,8 @@ app.get('/api/health', async (req, res) => {
             status: 'OK', 
             timestamp: new Date().toISOString(),
             database: 'connected',
-            recordings_count: recordings.length
+            recordings_count: recordings.length,
+            version: '1.0.0'
         });
     } catch (error) {
         res.json({

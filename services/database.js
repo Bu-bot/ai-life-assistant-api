@@ -69,6 +69,46 @@ class DatabaseService {
         }
     }
 
+    // Delete a recording and all its related entities
+    async deleteRecording(recordingId) {
+        const client = await this.pool.connect();
+        
+        try {
+            await client.query('BEGIN');
+            
+            // Delete related entities first (foreign key constraints)
+            await client.query('DELETE FROM people WHERE recording_id = $1', [recordingId]);
+            await client.query('DELETE FROM tasks WHERE recording_id = $1', [recordingId]);
+            await client.query('DELETE FROM events WHERE recording_id = $1', [recordingId]);
+            await client.query('DELETE FROM topics WHERE recording_id = $1', [recordingId]);
+            await client.query('DELETE FROM locations WHERE recording_id = $1', [recordingId]);
+            await client.query('DELETE FROM items WHERE recording_id = $1', [recordingId]);
+            
+            // Delete the main recording
+            const result = await client.query(
+                'DELETE FROM recordings WHERE id = $1 RETURNING *', 
+                [recordingId]
+            );
+            
+            await client.query('COMMIT');
+            
+            if (result.rows.length > 0) {
+                console.log(`🗑️ Recording ${recordingId} deleted successfully`);
+                return result.rows[0];
+            } else {
+                console.log(`❌ Recording ${recordingId} not found`);
+                return null;
+            }
+            
+        } catch (error) {
+            await client.query('ROLLBACK');
+            console.error('Error deleting recording:', error);
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
     // Insert entities into their respective tables
     async insertEntities(client, recordingId, entities) {
         // Insert people
