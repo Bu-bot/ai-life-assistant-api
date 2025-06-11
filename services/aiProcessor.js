@@ -103,7 +103,17 @@ Return only valid JSON, no other text.`;
                 return `I have ${recordings.length} recordings but they're too long to process efficiently. Try asking about more recent topics.`;
             }
             
+            // Get current date context
+            const now = new Date();
+            const todayDate = now.toLocaleDateString();
+            const todayDay = now.toLocaleDateString('en-US', { weekday: 'long' });
+            
             const prompt = `You are a personal AI assistant. Answer the user's question based ONLY on their recorded information below.
+
+Current Context:
+- Today is ${todayDay}, ${todayDate}
+- When user asks about "today", they mean ${todayDay}
+- When user asks about "this week", consider the current week context
 
 Personal recordings (most recent shown):
 ${context}
@@ -112,6 +122,8 @@ User question: ${question}
 
 Instructions:
 - Provide a helpful, specific answer based only on the recordings above
+- Use the current date context to interpret time-related questions
+- If user asks about "today's lunch" and you see lunch plans for "${todayDay}", connect them
 - If the recordings don't contain enough information to fully answer the question, say so
 - Be concise but thorough
 - Reference specific recordings when relevant (by date if helpful)
