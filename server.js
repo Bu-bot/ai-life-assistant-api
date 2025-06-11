@@ -69,33 +69,21 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
         const entities = await aiProcessor.extractEntities(transcription);
         
         // Save to database
-       
-        // Save to database
         const newRecording = await database.saveRecording(transcription, entities);
         
-        // NEW: Check for potential task completions
+        // Check for potential task completions
         try {
-            await database.createTaskSuggestionsTable(); // Ensure table exists
-            const taskCompletions = await database.findPotentialTaskCompletions(
-                transcription, 
-                newRecording.id
-            );
-            
-            if (taskCompletions.length > 0) {
-                console.log(`🎯 Found ${taskCompletions.length} potential task completions:`, 
-                    taskCompletions.map(tc => tc.taskDescription));
-                
-                // Add task completion suggestions to the response
-                newRecording.taskCompletionSuggestions = taskCompletions;
+            const taskCompletion = await database.detectTaskCompletion(transcription, newRecording.id);
+            if (taskCompletion.hasCompletion) {
+                newRecording.taskCompletionDetected = taskCompletion;
+                console.log(`🎯 Task completion detected in recording ${newRecording.id}`);
             }
         } catch (error) {
-            console.error('Error checking task completions:', error);
+            console.error('Error checking task completion:', error);
             // Don't fail the whole request if task detection fails
         }
         
         res.json(newRecording);
-
-
     } catch (error) {
         console.error('Error processing recording:', error);
         res.status(500).json({ error: 'Failed to process recording. Please try again.' });
@@ -125,6 +113,43 @@ app.delete('/api/recordings/:id', async (req, res) => {
     } catch (error) {
         console.error('Error deleting recording:', error);
         res.status(500).json({ error: 'Failed to delete recording' });
+    }
+});
+
+// NEW: Get pending tasks
+app.get('/api/tasks/pending', async (req, res) => {
+    try {
+        const pendingTasks = await database.getPendingTasks();
+        res.json(pendingTasks);
+    } catch (error) {
+        console.error('Error fetching pending tasks:', error);
+        res.status(500).json({ error: 'Failed to fetch pending tasks' });
+    }
+});
+
+// NEW: Mark task as completed
+app.post('/api/tasks/:id/complete', async (req, res) => {
+    try {
+        const taskId = parseInt(req.params.id);
+        const { completedByRecordingId } = req.body;
+        
+        if (!taskId || isNaN(taskId)) {
+            return res.status(400).json({ error: 'Invalid task ID' });
+        }
+        
+        const completedTask = await database.completeTask(taskId, completedByRecordingId);
+        
+        if (completedTask) {
+            res.json({ 
+                message: 'Task marked as completed',
+                task: completedTask 
+            });
+        } else {
+            res.status(404).json({ error: 'Task not found or already completed' });
+        }
+    } catch (error) {
+        console.error('Error completing task:', error);
+        res.status(500).json({ error: 'Failed to complete task' });
     }
 });
 
@@ -217,7 +242,7 @@ app.get('/api/health', async (req, res) => {
             timestamp: new Date().toISOString(),
             database: 'connected',
             recordings_count: recordings.length,
-            version: '1.0.0'
+            version: '2.0.0'
         });
     } catch (error) {
         res.json({
