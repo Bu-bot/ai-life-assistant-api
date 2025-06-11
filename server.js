@@ -69,9 +69,33 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
         const entities = await aiProcessor.extractEntities(transcription);
         
         // Save to database
+       
+        // Save to database
         const newRecording = await database.saveRecording(transcription, entities);
         
+        // NEW: Check for potential task completions
+        try {
+            await database.createTaskSuggestionsTable(); // Ensure table exists
+            const taskCompletions = await database.findPotentialTaskCompletions(
+                transcription, 
+                newRecording.id
+            );
+            
+            if (taskCompletions.length > 0) {
+                console.log(`🎯 Found ${taskCompletions.length} potential task completions:`, 
+                    taskCompletions.map(tc => tc.taskDescription));
+                
+                // Add task completion suggestions to the response
+                newRecording.taskCompletionSuggestions = taskCompletions;
+            }
+        } catch (error) {
+            console.error('Error checking task completions:', error);
+            // Don't fail the whole request if task detection fails
+        }
+        
         res.json(newRecording);
+
+
     } catch (error) {
         console.error('Error processing recording:', error);
         res.status(500).json({ error: 'Failed to process recording. Please try again.' });
