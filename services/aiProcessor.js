@@ -6,9 +6,9 @@ class AIProcessor {
         this.openaiApiKey = process.env.OPENAI_API_KEY;
         this.apiUrl = 'https://api.openai.com/v1/chat/completions';
         
-        // Cost control settings
-        this.MAX_RECORDINGS_PER_QUERY = 15; // Maximum recordings to send per question
-        this.MAX_CONTEXT_LENGTH = 3000; // Maximum characters of context
+        // Simplified settings without heavy filtering
+        this.MAX_RECORDINGS_FOR_CONTEXT = 50; // Use more recordings now
+        this.MAX_CONTEXT_LENGTH = 8000; // Increased context limit
     }
 
     async extractEntities(text) {
@@ -58,72 +58,22 @@ Return only valid JSON, no other text.`;
         }
     }
 
-    // Smart context filtering to reduce costs
-    filterRelevantRecordings(question, recordings) {
-        if (!recordings || recordings.length === 0) return [];
+    // Simplified context preparation - no complex filtering
+    prepareContext(recordings) {
+        if (!recordings || recordings.length === 0) return '';
 
-        const questionLower = question.toLowerCase();
-        const questionWords = questionLower.split(/\s+/).filter(word => word.length > 2);
-        
-        // Score recordings by relevance
-        const scoredRecordings = recordings.map(recording => {
-            let score = 0;
-            const recordingText = recording.text.toLowerCase();
-            const recordingAge = Date.now() - new Date(recording.timestamp).getTime();
-            const daysOld = recordingAge / (1000 * 60 * 60 * 24);
-            
-            // Score based on keyword matches
-            questionWords.forEach(word => {
-                if (recordingText.includes(word)) {
-                    score += 10;
-                }
-            });
-            
-            // Score based on entity matches
-            if (recording.entities) {
-                Object.values(recording.entities).forEach(entityArray => {
-                    if (Array.isArray(entityArray)) {
-                        entityArray.forEach(entity => {
-                            if (questionLower.includes(entity.toLowerCase())) {
-                                score += 15; // Higher weight for entity matches
-                            }
-                        });
-                    }
-                });
-            }
-            
-            // Boost recent recordings slightly
-            if (daysOld < 7) score += 2;
-            if (daysOld < 1) score += 3;
-            
-            return { ...recording, relevanceScore: score };
-        });
-        
-        // Sort by relevance and take top recordings
-        const relevantRecordings = scoredRecordings
-            .filter(r => r.relevanceScore > 0) // Only include recordings with some relevance
-            .sort((a, b) => b.relevanceScore - a.relevanceScore)
-            .slice(0, this.MAX_RECORDINGS_PER_QUERY);
-        
-        // If no relevant recordings found, include recent ones
-        if (relevantRecordings.length === 0) {
-            return recordings
-                .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-                .slice(0, Math.min(5, recordings.length));
-        }
-        
-        console.log(`Filtered ${recordings.length} recordings down to ${relevantRecordings.length} relevant ones`);
-        return relevantRecordings;
-    }
+        // Take the most recent recordings up to our limit
+        const recentRecordings = recordings
+            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+            .slice(0, this.MAX_RECORDINGS_FOR_CONTEXT);
 
-    // Trim context to stay within character limits
-    trimContext(recordings) {
         let context = '';
         let usedRecordings = 0;
         
-        for (const recording of recordings) {
+        for (const recording of recentRecordings) {
             const recordingText = `[${new Date(recording.timestamp).toLocaleDateString()}] ${recording.text}\n`;
             
+            // Check if adding this recording would exceed our context limit
             if (context.length + recordingText.length > this.MAX_CONTEXT_LENGTH) {
                 break;
             }
@@ -146,19 +96,16 @@ Return only valid JSON, no other text.`;
         }
 
         try {
-            // Step 1: Filter for relevant recordings only
-            const relevantRecordings = this.filterRelevantRecordings(question, recordings);
+            // Use ALL recordings (no filtering) up to our limits
+            const context = this.prepareContext(recordings);
             
-            if (relevantRecordings.length === 0) {
-                return `I searched through your ${recordings.length} recordings but couldn't find anything relevant to "${question}". Try asking about topics you've actually recorded, or record something new first!`;
+            if (!context) {
+                return `I have ${recordings.length} recordings but they're too long to process efficiently. Try asking about more recent topics.`;
             }
-            
-            // Step 2: Trim context to stay within limits
-            const context = this.trimContext(relevantRecordings);
             
             const prompt = `You are a personal AI assistant. Answer the user's question based ONLY on their recorded information below.
 
-Personal recordings (most relevant shown):
+Personal recordings (most recent shown):
 ${context}
 
 User question: ${question}
@@ -169,7 +116,7 @@ Instructions:
 - Be concise but thorough
 - Reference specific recordings when relevant (by date if helpful)
 - Do not make up information not present in the recordings
-- Note: I've only shown you the most relevant recordings to keep costs down`;
+- Note: I'm searching through ${recordings.length} total recordings to find your answer`;
 
             const response = await axios.post(this.apiUrl, {
                 model: 'gpt-3.5-turbo',
@@ -177,7 +124,7 @@ Instructions:
                     { role: 'system', content: 'You are a helpful personal assistant that answers questions based strictly on the user\'s recorded information. Never make up information.' },
                     { role: 'user', content: prompt }
                 ],
-                max_tokens: 400,
+                max_tokens: 500,
                 temperature: 0.3
             }, {
                 headers: {
@@ -188,10 +135,8 @@ Instructions:
 
             const aiResponse = response.data.choices[0].message.content.trim();
             
-            // Add context info for transparency
-            const contextInfo = relevantRecordings.length < recordings.length 
-                ? `\n\n💡 *Searched ${recordings.length} recordings, showing answer based on ${relevantRecordings.length} most relevant ones.*`
-                : '';
+            // Add simple context info
+            const contextInfo = `\n\n💡 *Searched ${recordings.length} recordings for your answer.*`;
             
             return aiResponse + contextInfo;
 
@@ -208,10 +153,9 @@ Instructions:
         }
     }
 
-    // Get cost estimation for transparency
+    // Simple cost estimation
     estimateTokenUsage(question, recordings) {
-        const relevantRecordings = this.filterRelevantRecordings(question, recordings);
-        const context = this.trimContext(relevantRecordings);
+        const context = this.prepareContext(recordings);
         
         // Rough token estimation (1 token ≈ 4 characters)
         const estimatedTokens = Math.ceil((question.length + context.length + 200) / 4);
@@ -219,7 +163,7 @@ Instructions:
         
         return {
             totalRecordings: recordings.length,
-            relevantRecordings: relevantRecordings.length,
+            usedRecordings: Math.min(recordings.length, this.MAX_RECORDINGS_FOR_CONTEXT),
             estimatedTokens,
             estimatedCostUSD: estimatedCost.toFixed(6)
         };
