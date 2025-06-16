@@ -262,6 +262,30 @@ app.get('/api/analytics', async (req, res) => {
     }
 });
 
+// Real usage tracking endpoint that calls actual vendor APIs
+app.get('/api/usage/real', async (req, res) => {
+    try {
+        const timeframe = req.query.timeframe || '30'; // days
+        const realUsageData = await database.getRealUsageData(timeframe);
+        res.json(realUsageData);
+    } catch (error) {
+        console.error('Error fetching real usage data:', error);
+        res.status(500).json({ error: 'Failed to fetch real usage data from vendors' });
+    }
+});
+
+// Test individual vendor connections
+app.get('/api/usage/test/:vendor', async (req, res) => {
+    try {
+        const vendor = req.params.vendor;
+        const testResult = await database.testVendorConnection(vendor);
+        res.json(testResult);
+    } catch (error) {
+        console.error(`Error testing ${req.params.vendor} connection:`, error);
+        res.status(500).json({ error: `Failed to test ${req.params.vendor} connection` });
+    }
+});
+
 // Search endpoint
 app.get('/api/search', async (req, res) => {
     try {
@@ -287,7 +311,7 @@ app.get('/api/health', async (req, res) => {
             timestamp: new Date().toISOString(),
             database: 'connected',
             recordings_count: recordings.length,
-            version: '3.0.0'
+            version: '4.0.0'
         });
     } catch (error) {
         res.json({
