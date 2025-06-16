@@ -27,42 +27,34 @@ class DatabaseService {
     // Detect project from recording text (e.g., "Work: had a meeting")
 
     // Enhanced case-insensitive project detection
+   
+   // Simple debug test
     async detectProjectFromText(text) {
-        try {
-            // Look for "ProjectName:" pattern at the beginning of text (case-insensitive)
-            const projectMatch = text.match(/^([^:]+):\s*(.+)/i);
+        console.log(`🔍 SIMPLE DEBUG - Input text: "${text}"`);
+        
+        // Test if "work" is at the start
+        if (text.toLowerCase().startsWith('work')) {
+            console.log(`🎯 Text starts with 'work' - checking database`);
             
-            if (projectMatch) {
-                const projectName = projectMatch[1].trim();
-                const contentWithoutProject = projectMatch[2].trim();
-                
-                console.log(`🔍 Detected potential project: "${projectName}"`);
-                
-                // Check if project exists (case-insensitive)
-                const result = await this.pool.query(
-                    'SELECT * FROM projects WHERE LOWER(name) = LOWER($1) AND is_active = true',
-                    [projectName]
-                );
-                
-                if (result.rows.length > 0) {
-                    console.log(`📁 Found matching project: "${result.rows[0].name}" (matched "${projectName}")`);
-                    return {
-                        project: result.rows[0],
-                        cleanedText: contentWithoutProject
-                    };
-                } else {
-                    console.log(`📁 No project found matching: "${projectName}"`);
-                }
-            } else {
-                console.log(`📁 No project pattern detected in: "${text.substring(0, 50)}..."`);
+            const result = await this.pool.query(
+                'SELECT * FROM projects WHERE LOWER(name) = LOWER($1) AND is_active = true',
+                ['work']
+            );
+            
+            console.log(`🔍 Found ${result.rows.length} projects named 'work'`);
+            
+            if (result.rows.length > 0) {
+                console.log(`📁 SUCCESS - Found project: ${result.rows[0].name}`);
+                return {
+                    project: result.rows[0],
+                    cleanedText: text.replace(/^work[,.\s]?\s*/i, '')
+                };
             }
-            
-            return null;
-        } catch (error) {
-            console.error('Error detecting project from text:', error);
-            return null;
         }
-    }
+        
+        console.log(`❌ No 'work' project detected`);
+        return null;
+    } 
 
     // Save a new recording with extracted entities and project detection
     async saveRecording(text, entities = {}, projectId = null) {
