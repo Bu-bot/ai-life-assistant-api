@@ -1,4 +1,4 @@
-// backend/services/database.js - Version 3 with Projects Support
+// backend/services/database.js - Complete Version with Real Usage Tracking
 const { Pool } = require('pg');
 
 class DatabaseService {
@@ -24,9 +24,7 @@ class DatabaseService {
         }
     }
 
-   
-    
-// Complete project detection for all project names
+    // Complete project detection for all project names
     async detectProjectFromText(text) {
         try {
             console.log(`🔍 Project detection - Input: "${text}"`);
@@ -575,50 +573,6 @@ class DatabaseService {
         }
     }
 
-    // Analytics and utility methods
-    async getAnalytics(timeframe = '30 days') {
-        try {
-            const result = await this.pool.query(`
-                SELECT 
-                    COUNT(DISTINCT r.id) as total_recordings,
-                    COUNT(DISTINCT p.name) as unique_people,
-                    COUNT(t.id) as total_tasks,
-                    COUNT(CASE WHEN t.status = 'completed' THEN 1 END) as completed_tasks,
-                    AVG(r.word_count) as avg_words_per_recording
-                FROM recordings r
-                LEFT JOIN people p ON r.id = p.recording_id
-                LEFT JOIN tasks t ON r.id = t.recording_id
-                WHERE r.timestamp >= NOW() - INTERVAL '${timeframe}'
-            `);
-
-            return result.rows[0];
-        } catch (error) {
-            console.error('Error fetching analytics:', error);
-            throw error;
-        }
-    }
-
-    async searchRecordings(searchTerm) {
-        try {
-            const result = await this.pool.query(`
-                SELECT id, timestamp, text, word_count
-                FROM recordings 
-                WHERE text ILIKE $1
-                ORDER BY timestamp DESC
-                LIMIT 50
-            `, [`%${searchTerm}%`]);
-
-            return result.rows;
-        } catch (error) {
-            console.error('Error searching recordings:', error);
-            throw error;
-        }
-    }
-
-    // Add these complete methods to your services/database.js (before the closing bracket of DatabaseService class)
-
-    // Add these methods to your services/database.js - Real Usage Tracking with Vendor APIs
-
     // Real usage data that calls actual vendor APIs
     async getRealUsageData(timeframeDays = 30) {
         try {
@@ -667,7 +621,7 @@ class DatabaseService {
     async getOpenAIRealUsage(timeframeDays = 30) {
         try {
             if (!process.env.OPENAI_API_KEY) {
-                return { status: 'error', error: 'OpenAI API key not configured' };
+                return { status: 'error', error: 'OpenAI API key not configured', totalCost: 0 };
             }
 
             const startTime = Math.floor(Date.now() / 1000) - (timeframeDays * 24 * 60 * 60);
@@ -768,7 +722,7 @@ class DatabaseService {
     async getRailwayRealUsage(timeframeDays = 30) {
         try {
             if (!process.env.RAILWAY_API_TOKEN) {
-                return { status: 'error', error: 'Railway API token not configured' };
+                return { status: 'error', error: 'Railway API token not configured', totalCost: 0 };
             }
 
             const query = `
@@ -868,7 +822,7 @@ class DatabaseService {
     async getSupabaseRealUsage(timeframeDays = 30) {
         try {
             if (!process.env.SUPABASE_PROJECT_REF || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-                return { status: 'error', error: 'Supabase credentials not configured' };
+                return { status: 'error', error: 'Supabase credentials not configured', totalCost: 0 };
             }
 
             const metricsUrl = `https://${process.env.SUPABASE_PROJECT_REF}.supabase.co/customer/v1/privileged/metrics`;
@@ -896,8 +850,6 @@ class DatabaseService {
             let dbSize = 0;
             let activeConnections = 0;
             let dbRequests = 0;
-            let storageUsed = 0;
-            let authUsers = 0;
 
             lines.forEach(line => {
                 // Parse key metrics from Prometheus format
@@ -949,7 +901,7 @@ class DatabaseService {
                 storageCost: parseFloat(storageCost.toFixed(4)),
                 egress: parseFloat(estimatedEgressGB.toFixed(2)),
                 egressCost: parseFloat(egressCost.toFixed(4)),
-                authUsers: authUsers || 1 // At least 1 (you)
+                authUsers: 1 // At least 1 (you)
             };
 
         } catch (error) {
@@ -1016,13 +968,51 @@ class DatabaseService {
         }
     }
 
+    // Analytics and utility methods
+    async getAnalytics(timeframe = '30 days') {
+        try {
+            const result = await this.pool.query(`
+                SELECT 
+                    COUNT(DISTINCT r.id) as total_recordings,
+                    COUNT(DISTINCT p.name) as unique_people,
+                    COUNT(t.id) as total_tasks,
+                    COUNT(CASE WHEN t.status = 'completed' THEN 1 END) as completed_tasks,
+                    AVG(r.word_count) as avg_words_per_recording
+                FROM recordings r
+                LEFT JOIN people p ON r.id = p.recording_id
+                LEFT JOIN tasks t ON r.id = t.recording_id
+                WHERE r.timestamp >= NOW() - INTERVAL '${timeframe}'
+            `);
+
+            return result.rows[0];
+        } catch (error) {
+            console.error('Error fetching analytics:', error);
+            throw error;
+        }
+    }
+
+    async searchRecordings(searchTerm) {
+        try {
+            const result = await this.pool.query(`
+                SELECT id, timestamp, text, word_count
+                FROM recordings 
+                WHERE text ILIKE $1
+                ORDER BY timestamp DESC
+                LIMIT 50
+            `, [`%${searchTerm}%`]);
+
+            return result.rows;
+        } catch (error) {
+            console.error('Error searching recordings:', error);
+            throw error;
+        }
+    }
 
     // Close database connection
     async close() {
         await this.pool.end();
         console.log('Database connection closed');
     }
-    
 }
 
 module.exports = new DatabaseService();
