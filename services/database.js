@@ -1,4 +1,4 @@
-// backend/services/database.js - Version 2 with Task Status Tracking
+// backend/services/database.js - Version 3 with Projects Support
 const { Pool } = require('pg');
 
 class DatabaseService {
@@ -24,22 +24,76 @@ class DatabaseService {
         }
     }
 
-    // Save a new recording with extracted entities
-    async saveRecording(text, entities = {}) {
+    // Detect project from recording text (e.g., "Work: had a meeting")
+    async detectProjectFromText(text) {
+        try {
+            // Look for "ProjectName:" pattern at the beginning of text
+            const projectMatch = text.match(/^([^:]+):\s*(.+)/);
+            
+            if (projectMatch) {
+                const projectName = projectMatch[1].trim();
+                const contentWithoutProject = projectMatch[2].trim();
+                
+                // Check if project exists
+                const result = await this.pool.query(
+                    'SELECT * FROM projects WHERE LOWER(name) = LOWER($1) AND is_active = true',
+                    [projectName]
+                );
+                
+                if (result.rows.length > 0) {
+                    return {
+                        project: result.rows[0],
+                        cleanedText: contentWithoutProject
+                    };
+                }
+            }
+            
+            return null;
+        } catch (error) {
+            console.error('Error detecting project from text:', error);
+            return null;
+        }
+    }
+
+    // Save a new recording with extracted entities and project detection
+    async saveRecording(text, entities = {}, projectId = null) {
         const client = await this.pool.connect();
         
         try {
             await client.query('BEGIN');
 
-            // Calculate word count
-            const wordCount = text.trim().split(/\s+/).length;
+            // If no projectId provided, try to detect from text
+            let finalProjectId = projectId;
+            let finalText = text;
+            
+            if (!projectId) {
+                const projectDetection = await this.detectProjectFromText(text);
+                if (projectDetection) {
+                    finalProjectId = projectDetection.project.id;
+                    finalText = projectDetection.cleanedText;
+                    console.log(`📁 Auto-detected project: ${projectDetection.project.name}`);
+                }
+            }
+            
+            // If still no project, use General project
+            if (!finalProjectId) {
+                const generalProject = await client.query(
+                    "SELECT id FROM projects WHERE name = 'General' AND is_active = true LIMIT 1"
+                );
+                if (generalProject.rows.length > 0) {
+                    finalProjectId = generalProject.rows[0].id;
+                }
+            }
 
-            // Insert main recording
+            // Calculate word count
+            const wordCount = finalText.trim().split(/\s+/).length;
+
+            // Insert main recording with project
             const recordingResult = await client.query(
-                `INSERT INTO recordings (text, word_count, timestamp) 
-                 VALUES ($1, $2, NOW()) 
+                `INSERT INTO recordings (text, word_count, project_id, timestamp) 
+                 VALUES ($1, $2, $3, NOW()) 
                  RETURNING id, timestamp`,
-                [text, wordCount]
+                [finalText, wordCount, finalProjectId]
             );
 
             const recordingId = recordingResult.rows[0].id;
@@ -50,14 +104,15 @@ class DatabaseService {
 
             await client.query('COMMIT');
 
-            console.log(`📝 Recording saved with ID: ${recordingId}`);
+            console.log(`📝 Recording saved with ID: ${recordingId}, Project: ${finalProjectId}`);
             
             return {
                 id: recordingId,
                 timestamp: timestamp,
-                text: text,
+                text: finalText,
                 entities: entities,
-                word_count: wordCount
+                word_count: wordCount,
+                project_id: finalProjectId
             };
 
         } catch (error) {
@@ -181,10 +236,13 @@ class DatabaseService {
                     r.timestamp,
                     r.text,
                     r.word_count,
+                    r.project_id,
+                    p.name as project_name,
+                    p.color as project_color,
                     
                     -- Aggregate people as JSON array
                     COALESCE(
-                        JSON_AGG(DISTINCT p.name) FILTER (WHERE p.name IS NOT NULL), 
+                        JSON_AGG(DISTINCT pe.name) FILTER (WHERE pe.name IS NOT NULL), 
                         '[]'::json
                     ) as people,
                     
@@ -219,14 +277,15 @@ class DatabaseService {
                     ) as items
                     
                 FROM recordings r
-                LEFT JOIN people p ON r.id = p.recording_id
+                LEFT JOIN projects p ON r.project_id = p.id
+                LEFT JOIN people pe ON r.id = pe.recording_id
                 LEFT JOIN tasks t ON r.id = t.recording_id
                 LEFT JOIN events e ON r.id = e.recording_id
                 LEFT JOIN topics tp ON r.id = tp.recording_id
                 LEFT JOIN locations l ON r.id = l.recording_id
                 LEFT JOIN items i ON r.id = i.recording_id
                 
-                GROUP BY r.id, r.timestamp, r.text, r.word_count
+                GROUP BY r.id, r.timestamp, r.text, r.word_count, r.project_id, p.name, p.color
                 ORDER BY r.timestamp DESC
             `);
 
@@ -236,6 +295,11 @@ class DatabaseService {
                 timestamp: row.timestamp,
                 text: row.text,
                 word_count: row.word_count,
+                project_id: row.project_id,
+                project: row.project_name ? {
+                    name: row.project_name,
+                    color: row.project_color
+                } : null,
                 entities: {
                     people: row.people || [],
                     tasks: row.tasks || [],
@@ -252,7 +316,7 @@ class DatabaseService {
         }
     }
 
-    // Get pending tasks only
+    // Task Management Methods
     async getPendingTasks() {
         try {
             const result = await this.pool.query(`
@@ -270,7 +334,6 @@ class DatabaseService {
         }
     }
 
-    // Mark task as completed
     async completeTask(taskId, completedByRecordingId = null) {
         const client = await this.pool.connect();
         
@@ -306,7 +369,6 @@ class DatabaseService {
         }
     }
 
-    // Simple task completion detection
     async detectTaskCompletion(recordingText, recordingId) {
         try {
             const recordingLower = recordingText.toLowerCase();
@@ -341,68 +403,16 @@ class DatabaseService {
         }
     }
 
-    // Analytics queries for future dashboard
-    async getAnalytics(timeframe = '30 days') {
-        try {
-            const result = await this.pool.query(`
-                SELECT 
-                    COUNT(DISTINCT r.id) as total_recordings,
-                    COUNT(DISTINCT p.name) as unique_people,
-                    COUNT(t.id) as total_tasks,
-                    COUNT(CASE WHEN t.status = 'completed' THEN 1 END) as completed_tasks,
-                    AVG(r.word_count) as avg_words_per_recording
-                FROM recordings r
-                LEFT JOIN people p ON r.id = p.recording_id
-                LEFT JOIN tasks t ON r.id = t.recording_id
-                WHERE r.timestamp >= NOW() - INTERVAL '${timeframe}'
-            `);
-
-            return result.rows[0];
-        } catch (error) {
-            console.error('Error fetching analytics:', error);
-            throw error;
-        }
-    }
-
-    // Search recordings by text content
-    async searchRecordings(searchTerm) {
-        try {
-            const result = await this.pool.query(`
-                SELECT id, timestamp, text, word_count
-                FROM recordings 
-                WHERE text ILIKE $1
-                ORDER BY timestamp DESC
-                LIMIT 50
-            `, [`%${searchTerm}%`]);
-
-            return result.rows;
-        } catch (error) {
-            console.error('Error searching recordings:', error);
-            throw error;
-        }
-    }
-
-    // Close database connection
-    async close() {
-        await this.pool.end();
-        console.log('Database connection closed');
-    }
-
-// Add these methods to your database.js file (before the closing bracket)
-
     // Project Management Methods
-    
-    // Get all active projects
     async getAllProjects() {
         try {
             const result = await this.pool.query(`
                 SELECT p.*, 
-                       COUNT(r.id) as recording_count,
-                       MAX(r.timestamp) as last_recording_at
+                       COUNT(r.id) as recording_count
                 FROM projects p
                 LEFT JOIN recordings r ON p.id = r.project_id
                 WHERE p.is_active = true
-                GROUP BY p.id, p.name, p.description, p.color, p.is_active, p.created_at, p.updated_at
+                GROUP BY p.id
                 ORDER BY p.created_at ASC
             `);
 
@@ -413,19 +423,18 @@ class DatabaseService {
         }
     }
 
-    // Create a new project
     async createProject(name, description = '', color = '#667eea') {
         try {
             const result = await this.pool.query(`
-                INSERT INTO projects (name, description, color, is_active, created_at, updated_at)
-                VALUES ($1, $2, $3, true, NOW(), NOW())
+                INSERT INTO projects (name, description, color)
+                VALUES ($1, $2, $3)
                 RETURNING *
             `, [name.trim(), description.trim(), color]);
 
             console.log(`📁 Project created: ${name}`);
             return result.rows[0];
         } catch (error) {
-            if (error.code === '23505') { // Unique constraint violation
+            if (error.code === '23505') {
                 throw new Error('Project name already exists');
             }
             console.error('Error creating project:', error);
@@ -433,35 +442,6 @@ class DatabaseService {
         }
     }
 
-    // Update a project
-    async updateProject(projectId, updates) {
-        try {
-            const { name, description, color, is_active } = updates;
-            
-            const result = await this.pool.query(`
-                UPDATE projects 
-                SET name = COALESCE($2, name),
-                    description = COALESCE($3, description),
-                    color = COALESCE($4, color),
-                    is_active = COALESCE($5, is_active),
-                    updated_at = NOW()
-                WHERE id = $1
-                RETURNING *
-            `, [projectId, name?.trim(), description?.trim(), color, is_active]);
-
-            if (result.rows.length > 0) {
-                console.log(`📝 Project ${projectId} updated`);
-                return result.rows[0];
-            } else {
-                throw new Error('Project not found');
-            }
-        } catch (error) {
-            console.error('Error updating project:', error);
-            throw error;
-        }
-    }
-
-    // Soft delete a project (mark as inactive)
     async deleteProject(projectId) {
         const client = await this.pool.connect();
         
@@ -492,7 +472,7 @@ class DatabaseService {
             
             // Mark project as inactive
             const result = await client.query(
-                'UPDATE projects SET is_active = false, updated_at = NOW() WHERE id = $1 RETURNING *',
+                'UPDATE projects SET is_active = false WHERE id = $1 RETURNING *',
                 [projectId]
             );
             
@@ -514,7 +494,6 @@ class DatabaseService {
         }
     }
 
-    // Get recordings for a specific project
     async getProjectRecordings(projectId) {
         try {
             const result = await this.pool.query(`
@@ -524,27 +503,10 @@ class DatabaseService {
                     r.text,
                     r.word_count,
                     p.name as project_name,
-                    p.color as project_color,
-                    
-                    -- Aggregate entities as before
-                    COALESCE(JSON_AGG(DISTINCT pe.name) FILTER (WHERE pe.name IS NOT NULL), '[]'::json) as people,
-                    COALESCE(JSON_AGG(DISTINCT t.task_description) FILTER (WHERE t.task_description IS NOT NULL), '[]'::json) as tasks,
-                    COALESCE(JSON_AGG(DISTINCT e.event_name) FILTER (WHERE e.event_name IS NOT NULL), '[]'::json) as events,
-                    COALESCE(JSON_AGG(DISTINCT tp.topic) FILTER (WHERE tp.topic IS NOT NULL), '[]'::json) as topics,
-                    COALESCE(JSON_AGG(DISTINCT l.location_name) FILTER (WHERE l.location_name IS NOT NULL), '[]'::json) as locations,
-                    COALESCE(JSON_AGG(DISTINCT i.item_name) FILTER (WHERE i.item_name IS NOT NULL), '[]'::json) as items
-                    
+                    p.color as project_color
                 FROM recordings r
                 LEFT JOIN projects p ON r.project_id = p.id
-                LEFT JOIN people pe ON r.id = pe.recording_id
-                LEFT JOIN tasks t ON r.id = t.recording_id
-                LEFT JOIN events e ON r.id = e.recording_id
-                LEFT JOIN topics tp ON r.id = tp.recording_id
-                LEFT JOIN locations l ON r.id = l.recording_id
-                LEFT JOIN items i ON r.id = i.recording_id
-                
                 WHERE r.project_id = $1
-                GROUP BY r.id, r.timestamp, r.text, r.word_count, p.name, p.color
                 ORDER BY r.timestamp DESC
             `, [projectId]);
 
@@ -556,14 +518,6 @@ class DatabaseService {
                 project: {
                     name: row.project_name,
                     color: row.project_color
-                },
-                entities: {
-                    people: row.people || [],
-                    tasks: row.tasks || [],
-                    events: row.events || [],
-                    topics: row.topics || [],
-                    locations: row.locations || [],
-                    items: row.items || []
                 }
             }));
         } catch (error) {
@@ -572,106 +526,51 @@ class DatabaseService {
         }
     }
 
-    // Detect project from recording text (e.g., "Work: had a meeting")
-    async detectProjectFromText(text) {
+    // Analytics and utility methods
+    async getAnalytics(timeframe = '30 days') {
         try {
-            // Look for "ProjectName:" pattern at the beginning of text
-            const projectMatch = text.match(/^([^:]+):\s*(.+)/);
-            
-            if (projectMatch) {
-                const projectName = projectMatch[1].trim();
-                const contentWithoutProject = projectMatch[2].trim();
-                
-                // Check if project exists
-                const result = await this.pool.query(
-                    'SELECT * FROM projects WHERE LOWER(name) = LOWER($1) AND is_active = true',
-                    [projectName]
-                );
-                
-                if (result.rows.length > 0) {
-                    return {
-                        project: result.rows[0],
-                        cleanedText: contentWithoutProject
-                    };
-                }
-            }
-            
-            return null;
+            const result = await this.pool.query(`
+                SELECT 
+                    COUNT(DISTINCT r.id) as total_recordings,
+                    COUNT(DISTINCT p.name) as unique_people,
+                    COUNT(t.id) as total_tasks,
+                    COUNT(CASE WHEN t.status = 'completed' THEN 1 END) as completed_tasks,
+                    AVG(r.word_count) as avg_words_per_recording
+                FROM recordings r
+                LEFT JOIN people p ON r.id = p.recording_id
+                LEFT JOIN tasks t ON r.id = t.recording_id
+                WHERE r.timestamp >= NOW() - INTERVAL '${timeframe}'
+            `);
+
+            return result.rows[0];
         } catch (error) {
-            console.error('Error detecting project from text:', error);
-            return null;
-        }
-    }
-
-    // Updated saveRecording method to handle projects
-    async saveRecording(text, entities = {}, projectId = null) {
-        const client = await this.pool.connect();
-        
-        try {
-            await client.query('BEGIN');
-
-            // If no projectId provided, try to detect from text
-            let finalProjectId = projectId;
-            let finalText = text;
-            
-            if (!projectId) {
-                const projectDetection = await this.detectProjectFromText(text);
-                if (projectDetection) {
-                    finalProjectId = projectDetection.project.id;
-                    finalText = projectDetection.cleanedText;
-                    console.log(`📁 Auto-detected project: ${projectDetection.project.name}`);
-                }
-            }
-            
-            // If still no project, use General project
-            if (!finalProjectId) {
-                const generalProject = await client.query(
-                    "SELECT id FROM projects WHERE name = 'General' AND is_active = true LIMIT 1"
-                );
-                if (generalProject.rows.length > 0) {
-                    finalProjectId = generalProject.rows[0].id;
-                }
-            }
-
-            // Calculate word count
-            const wordCount = finalText.trim().split(/\s+/).length;
-
-            // Insert main recording with project
-            const recordingResult = await client.query(
-                `INSERT INTO recordings (text, word_count, project_id, timestamp) 
-                 VALUES ($1, $2, $3, NOW()) 
-                 RETURNING id, timestamp`,
-                [finalText, wordCount, finalProjectId]
-            );
-
-            const recordingId = recordingResult.rows[0].id;
-            const timestamp = recordingResult.rows[0].timestamp;
-
-            // Insert extracted entities into separate tables
-            await this.insertEntities(client, recordingId, entities);
-
-            await client.query('COMMIT');
-
-            console.log(`📝 Recording saved with ID: ${recordingId}, Project: ${finalProjectId}`);
-            
-            return {
-                id: recordingId,
-                timestamp: timestamp,
-                text: finalText,
-                entities: entities,
-                word_count: wordCount,
-                project_id: finalProjectId
-            };
-
-        } catch (error) {
-            await client.query('ROLLBACK');
-            console.error('Error saving recording:', error);
+            console.error('Error fetching analytics:', error);
             throw error;
-        } finally {
-            client.release();
         }
     }
 
+    async searchRecordings(searchTerm) {
+        try {
+            const result = await this.pool.query(`
+                SELECT id, timestamp, text, word_count
+                FROM recordings 
+                WHERE text ILIKE $1
+                ORDER BY timestamp DESC
+                LIMIT 50
+            `, [`%${searchTerm}%`]);
+
+            return result.rows;
+        } catch (error) {
+            console.error('Error searching recordings:', error);
+            throw error;
+        }
+    }
+
+    // Close database connection
+    async close() {
+        await this.pool.end();
+        console.log('Database connection closed');
+    }
 }
 
 module.exports = new DatabaseService();
