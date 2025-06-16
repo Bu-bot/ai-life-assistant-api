@@ -68,7 +68,7 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
         // Extract entities and context using AI
         const entities = await aiProcessor.extractEntities(transcription);
         
-        // Save to database
+        // Save to database (this now handles project detection automatically)
         const newRecording = await database.saveRecording(transcription, entities);
         
         // Check for potential task completions
@@ -116,7 +116,7 @@ app.delete('/api/recordings/:id', async (req, res) => {
     }
 });
 
-// NEW: Get pending tasks
+// Task endpoints
 app.get('/api/tasks/pending', async (req, res) => {
     try {
         const pendingTasks = await database.getPendingTasks();
@@ -127,7 +127,6 @@ app.get('/api/tasks/pending', async (req, res) => {
     }
 });
 
-// NEW: Mark task as completed
 app.post('/api/tasks/:id/complete', async (req, res) => {
     try {
         const taskId = parseInt(req.params.id);
@@ -153,6 +152,74 @@ app.post('/api/tasks/:id/complete', async (req, res) => {
     }
 });
 
+// Projects endpoints
+app.get('/api/projects', async (req, res) => {
+    try {
+        const projects = await database.getAllProjects();
+        res.json(projects);
+    } catch (error) {
+        console.error('Error fetching projects:', error);
+        res.status(500).json({ error: 'Failed to fetch projects' });
+    }
+});
+
+app.post('/api/projects', async (req, res) => {
+    try {
+        const { name, description, color } = req.body;
+        
+        if (!name || name.trim() === '') {
+            return res.status(400).json({ error: 'Project name is required' });
+        }
+        
+        const newProject = await database.createProject(name, description, color);
+        res.status(201).json(newProject);
+    } catch (error) {
+        if (error.message === 'Project name already exists') {
+            res.status(409).json({ error: 'Project name already exists' });
+        } else {
+            console.error('Error creating project:', error);
+            res.status(500).json({ error: 'Failed to create project' });
+        }
+    }
+});
+
+app.delete('/api/projects/:id', async (req, res) => {
+    try {
+        const projectId = parseInt(req.params.id);
+        
+        if (!projectId || isNaN(projectId)) {
+            return res.status(400).json({ error: 'Invalid project ID' });
+        }
+        
+        const result = await database.deleteProject(projectId);
+        res.json({ 
+            message: 'Project deleted successfully',
+            project: result.project,
+            movedRecordings: result.movedRecordings
+        });
+    } catch (error) {
+        console.error('Error deleting project:', error);
+        res.status(500).json({ error: 'Failed to delete project' });
+    }
+});
+
+app.get('/api/projects/:id/recordings', async (req, res) => {
+    try {
+        const projectId = parseInt(req.params.id);
+        
+        if (!projectId || isNaN(projectId)) {
+            return res.status(400).json({ error: 'Invalid project ID' });
+        }
+        
+        const recordings = await database.getProjectRecordings(projectId);
+        res.json(recordings);
+    } catch (error) {
+        console.error('Error fetching project recordings:', error);
+        res.status(500).json({ error: 'Failed to fetch project recordings' });
+    }
+});
+
+// Chat endpoint
 app.post('/api/chat', async (req, res) => {
     try {
         const { question } = req.body;
@@ -180,7 +247,7 @@ app.post('/api/chat', async (req, res) => {
     }
 });
 
-// Analytics endpoint for future dashboard
+// Analytics endpoint
 app.get('/api/analytics', async (req, res) => {
     try {
         const timeframe = req.query.timeframe || '30 days';
@@ -208,32 +275,7 @@ app.get('/api/search', async (req, res) => {
     }
 });
 
-// Bulk delete endpoint (optional - for cleanup)
-app.delete('/api/recordings', async (req, res) => {
-    try {
-        const { ids } = req.body;
-        
-        if (!ids || !Array.isArray(ids)) {
-            return res.status(400).json({ error: 'Array of recording IDs required' });
-        }
-        
-        const deleteResults = await Promise.all(
-            ids.map(id => database.deleteRecording(parseInt(id)))
-        );
-        
-        const deletedCount = deleteResults.filter(result => result !== null).length;
-        
-        res.json({ 
-            message: `${deletedCount} recordings deleted successfully`,
-            deletedCount: deletedCount
-        });
-    } catch (error) {
-        console.error('Error bulk deleting recordings:', error);
-        res.status(500).json({ error: 'Failed to delete recordings' });
-    }
-});
-
-// Health check with database status
+// Health check
 app.get('/api/health', async (req, res) => {
     try {
         const recordings = await database.getAllRecordings();
@@ -242,7 +284,7 @@ app.get('/api/health', async (req, res) => {
             timestamp: new Date().toISOString(),
             database: 'connected',
             recordings_count: recordings.length,
-            version: '2.0.0'
+            version: '3.0.0'
         });
     } catch (error) {
         res.json({
@@ -265,103 +307,4 @@ app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Health check: http://localhost:${PORT}/api/health`);
     console.log('Database connection will be tested on first request');
-});
-
-// Add these endpoints to your server.js file (after existing endpoints)
-
-// Projects API Endpoints
-
-// Get all projects
-app.get('/api/projects', async (req, res) => {
-    try {
-        const projects = await database.getAllProjects();
-        res.json(projects);
-    } catch (error) {
-        console.error('Error fetching projects:', error);
-        res.status(500).json({ error: 'Failed to fetch projects' });
-    }
-});
-
-// Create a new project
-app.post('/api/projects', async (req, res) => {
-    try {
-        const { name, description, color } = req.body;
-        
-        if (!name || name.trim() === '') {
-            return res.status(400).json({ error: 'Project name is required' });
-        }
-        
-        const newProject = await database.createProject(name, description, color);
-        res.status(201).json(newProject);
-    } catch (error) {
-        if (error.message === 'Project name already exists') {
-            res.status(409).json({ error: 'Project name already exists' });
-        } else {
-            console.error('Error creating project:', error);
-            res.status(500).json({ error: 'Failed to create project' });
-        }
-    }
-});
-
-// Update a project
-app.put('/api/projects/:id', async (req, res) => {
-    try {
-        const projectId = parseInt(req.params.id);
-        const updates = req.body;
-        
-        if (!projectId || isNaN(projectId)) {
-            return res.status(400).json({ error: 'Invalid project ID' });
-        }
-        
-        const updatedProject = await database.updateProject(projectId, updates);
-        res.json(updatedProject);
-    } catch (error) {
-        if (error.message === 'Project not found') {
-            res.status(404).json({ error: 'Project not found' });
-        } else {
-            console.error('Error updating project:', error);
-            res.status(500).json({ error: 'Failed to update project' });
-        }
-    }
-});
-
-// Delete a project
-app.delete('/api/projects/:id', async (req, res) => {
-    try {
-        const projectId = parseInt(req.params.id);
-        
-        if (!projectId || isNaN(projectId)) {
-            return res.status(400).json({ error: 'Invalid project ID' });
-        }
-        
-        const result = await database.deleteProject(projectId);
-        res.json({ 
-            message: 'Project deleted successfully',
-            ...result 
-        });
-    } catch (error) {
-        if (error.message === 'Project not found') {
-            res.status(404).json({ error: 'Project not found' });
-        } else {
-            console.error('Error deleting project:', error);
-            res.status(500).json({ error: 'Failed to delete project' });
-        }
-    }
-});
-
-// Get recordings for a specific project
-app.get('/api/projects/:id/recordings', async (req, res) => {
-    try {
-        const projectId = parseInt(req.params.id);
-        
-        if (!projectId || isNaN(projectId)) {
-            return res.status(400).json({ error: 'Invalid project ID' });
-        }
-        
-        const recordings = await database.getProjectRecordings(projectId);
-        res.json(recordings);
-    } catch (error) {
-        console.error('Error fetching project recordings:', error);
-        res.status(500).json({ error: 'Failed to fetch project recordings' });
-    }
 });
