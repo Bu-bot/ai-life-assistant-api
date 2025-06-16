@@ -68,8 +68,11 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
         // Extract entities and context using AI
         const entities = await aiProcessor.extractEntities(transcription);
         
-        // Save to database (this now handles project detection automatically)
-        const newRecording = await database.saveRecording(transcription, entities);
+        // Get projectId from request (either form data or JSON)
+        const projectId = req.body.projectId ? parseInt(req.body.projectId) : null;
+        
+        // Save to database (this handles project detection AND explicit project selection)
+        const newRecording = await database.saveRecording(transcription, entities, projectId);
         
         // Check for potential task completions
         try {
